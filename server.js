@@ -1,38 +1,68 @@
-// Ponte TikTok LIVE -> jogo. Escuta a live e manda presentes/comentários para a página por WebSocket.
-const express = require('express'), http = require('http');
+// Servidor: entrega o jogo (index.html) e manda chat/presentes da live do TikTok pro jogo via WebSocket.
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { WebSocketServer } = require('ws');
-const lib = require('tiktok-live-connector');
-const Conn = lib.WebcastPushConnection || lib.TikTokLiveConnection; // aceita versões antigas e novas
-const USER = (process.env.TIKTOK_USER || '').replace('@', '').trim();
+const { WebcastPushConnection } = require('tiktok-live-connector');
 
-const app = express();
-app.use(express.static(__dirname + '/public'));
-app.get('/', (q, r) => r.sendFile(__dirname + '/index.html')); // fallback: index.html na raiz
-let ok = false;
-app.get('/status', (q, r) => r.json({ user: USER, conectado: ok }));
+const USUARIO = process.env.TIKTOK_USER || 'noxxzin7';
+const PORTA = process.env.PORT || 3000;
 
-const srv = http.createServer(app);
-const wss = new WebSocketServer({ server: srv, path: '/ws' });
-const send = o => { const s = JSON.stringify(o); wss.clients.forEach(c => c.readyState === 1 && c.send(s)); };
-
-let timer = null;
-const retry = () => { ok = false; if (timer) return; timer = setTimeout(() => { timer = null; conectar(); }, 15000); };
-
-function conectar() {
-  if (!USER) { console.log('Defina a variável TIKTOK_USER com o seu @ (sem o @).'); return; }
-  const c = new Conn(USER, {});
-  c.connect()
-    .then(() => { ok = true; console.log('Conectado na live de @' + USER); })
-    .catch(e => { console.log('Live offline ou erro, tentando de novo em 15s:', (e && e.message) || e); retry(); });
-  c.on('chat', d => send({ t: 'chat', u: d.uniqueId || (d.user && d.user.uniqueId) || 'Alguém', m: d.comment || '' }));
-  c.on('gift', d => {
-    const g = d.giftDetails || {}, type = d.giftType !== undefined ? d.giftType : g.giftType;
-    if (type === 1 && !d.repeatEnd) return; // sequência ainda em andamento: conta só no final
-    send({ t: 'gift', u: d.uniqueId || (d.user && d.user.uniqueId) || 'Alguém',
-      n: d.giftName || g.giftName || 'Presente', d: d.diamondCount !== undefined ? d.diamondCount : (g.diamondCount || 1), c: d.repeatCount || 1 });
+const server = http.createServer((req, res) => {
+  if (req.url === '/health') { res.end('ok'); return; }
+  fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
+    if (err) { res.writeHead(500); res.end('index.html nao encontrado'); return; }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(data);
   });
-  c.on('disconnected', retry);
-  c.on('streamEnd', retry);
+});
+
+const wss = new WebSocketServer({ server, path: '/ws' });
+function enviar(obj) {
+  const msg = JSON.stringify(obj);
+  wss.clients.forEach(c => { if (c.readyState === 1) c.send(msg); });
 }
 
-srv.listen(process.env.PORT || 3000, () => { console.log('Servidor no ar'); conectar(); });
+// teste: abra /ws e mande {"t":"chat","u":"teste","m":"atacar"} (opcional)
+wss.on('connection', ws => {
+  console.log('Jogo conectado');
+  ws.on('message', raw => { try { const m = JSON.parse(raw); if (m && m.t) enviar(m); } catch (e) {} });
+});
+
+function conectarTikTok() {
+  const live = new WebcastPushConnection(USUARIO);
+  let reconectando = false;
+  const tentarDeNovo = () => {
+    if (reconectando) return;
+    reconectando = true;
+    setTimeout(conectarTikTok, 10000);
+  };
+
+  live.connect()
+    .then(s => console.log('Conectado na live de @' + USUARIO + ' (sala ' + s.roomId + ')'))
+    .catch(e => { console.log('Live offline ou erro, tentando de novo em 10s:', e.message || e); tentarDeNovo(); });
+
+  live.on('chat', d => {
+    enviar({ t: 'chat', u: d.nickname || d.uniqueId, m: d.comment });
+  });
+
+  live.on('gift', d => {
+    // presente em sequencia (streak): so conta quando a sequencia termina
+    if (d.giftType === 1 && !d.repeatEnd) return;
+    enviar({
+      t: 'gift',
+      u: d.nickname || d.uniqueId,
+      n: d.giftName,
+      c: d.repeatCount || 1,
+      d: d.diamondCount || 1
+    });
+  });
+
+  live.on('disconnected', () => { console.log('Desconectou da live'); tentarDeNovo(); });
+  live.on('streamEnd', () => { console.log('Live encerrada'); tentarDeNovo(); });
+}
+
+server.listen(PORTA, () => {
+  console.log('Servidor na porta ' + PORTA);
+  conectarTikTok();
+});
