@@ -19,7 +19,7 @@ const retry = () => { ok = false; if (timer) return; timer = setTimeout(() => { 
 
 function conectar() {
   if (!USER) { console.log('Defina a variável TIKTOK_USER com o seu @ (sem o @).'); return; }
-  const c = new Conn(USER);
+  const c = new Conn(USER, {});
   c.connect()
     .then(() => { ok = true; console.log('Conectado na live de @' + USER); })
     .catch(e => { console.log('Live offline ou erro, tentando de novo em 15s:', (e && e.message) || e); retry(); });
