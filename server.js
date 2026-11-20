@@ -7,6 +7,7 @@ const USER = (process.env.TIKTOK_USER || '').replace('@', '').trim();
 
 const app = express();
 app.use(express.static(__dirname + '/public'));
+app.get('/', (q, r) => r.sendFile(__dirname + '/index.html')); // fallback: index.html na raiz
 let ok = false;
 app.get('/status', (q, r) => r.json({ user: USER, conectado: ok }));
 
